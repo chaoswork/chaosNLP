@@ -113,7 +113,8 @@ class Encoder(tf.keras.Model):
 
 
 class Decoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, dec_units, batch_sz):
+    def __init__(self, vocab_size, embedding_dim, dec_units,
+                 batch_sz, attention=None):
         super(Decoder, self).__init__()
         self.batch_sz = batch_sz
         self.dec_units = dec_units
@@ -123,32 +124,74 @@ class Decoder(tf.keras.Model):
         self.lstm_cell = tf.keras.layers.LSTMCell(self.dec_units)
 
         self.fc = tf.keras.layers.Dense(vocab_size)
+        self.attention = None
+        if attention == 'Bahdanau':
+            self.attention = BahdanauAttention(self.dec_units)
 
-    def one_step(self, inputs, state):
+    def one_step(self, inputs, state, enc_outputs):
         # inputs.shape = (batch_sz, )
         # x.shape = (batch_sz, emb_dim)
         x = self.embedding(inputs)
         # output.shape = (batch_sz, 1, dec_units)
         # print(x.shape, state[0].shape, state[1].shape)
+
+        if self.attention:
+            context_vector, attention_weights = self.attention(state[0], enc_outputs)
+            x = tf.concat([x, context_vector], axis=1)
+
         output, states = self.lstm_cell(x, state)
         output = tf.reshape(output, [-1, self.dec_units])
         output = self.fc(output)
         return output, states
 
-    def call(self, inputs, initial_state):
+    def call(self, inputs, initial_state, enc_outputs):
         outputs = []
         total_steps = inputs.shape[1]
         states = initial_state
         for i in range(total_steps):
             input_ti = inputs[:, i]
             # print(input_ti.shape)
-            output, states = self.one_step(input_ti, states)
+            output, states = self.one_step(input_ti, states, enc_outputs)
             outputs.append(output)
         outputs = tf.reshape(tf.concat(outputs, 1), [-1, total_steps, self.vocab_size])
         return outputs
 
 
+# Attention Mechanism
+class BahdanauAttention(tf.keras.layers.Layer):
+    def __init__(self, units):
+        super(BahdanauAttention, self).__init__()
+        self.W1 = tf.keras.layers.Dense(units)
+        self.W2 = tf.keras.layers.Dense(units)
+        self.V = tf.keras.layers.Dense(1)
 
+    def call(self, query, values):
+        # query hidden state shape == (batch_size, hidden size) s_i in paper
+        # values shape == (batch_size, max_len, hidden size) h in paper, h_j is value[:,j,:]
+
+        # we are doing this to broadcast addition along the time axis to calculate the score
+        # query_with_time_axis shape == (batch_size, 1, hidden size)
+        query_with_time_axis = tf.expand_dims(query, 1)
+
+        # score shape == (batch_size, max_length, 1)
+        # we get 1 at the last axis because we are applying score to self.V
+        # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+
+        score = self.V(tf.nn.tanh(
+            self.W1(query_with_time_axis) + self.W2(values)))
+        # score[:,j,:] is e_ij = a(s_{i-1}, h_j)
+        # a = tanh(s_{i-1} x W1 + h_j x W2 ) x W_{units, 1}
+
+        # attention_weights shape == (batch_size, max_length, 1)
+        # \alpha_{ij} in paper
+        # attention_weights[:,j,:] = \alpha_{ij}
+        attention_weights = tf.nn.softmax(score, axis=1)
+
+        # context_vector shape after sum == (batch_size, hidden_size)
+        context_vector = attention_weights * values
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights
 
 
 class NMT(object):
@@ -159,6 +202,7 @@ class NMT(object):
                  buffer_size=32000,
                  batch_size=64,
                  epochs=5,
+                 attention=None,
                  num_examples=None
                 ):
 
@@ -169,7 +213,7 @@ class NMT(object):
         self.epochs = epochs
         self.num_examples = num_examples
         self.checkpoint_dir = checkpoint_dir
-
+        self.attention = attention
 
 
 
@@ -189,7 +233,7 @@ class NMT(object):
         self.encoder = Encoder(self.vocab_inp_size, self.word_embedding_dim,
                                self.units, self.batch_size)
         self.decoder = Decoder(self.vocab_tar_size, self.word_embedding_dim,
-                               self.units, self.batch_size)
+                               self.units, self.batch_size, attention=self.attention)
 
         self.optimizer = tf.keras.optimizers.Adam()
 
@@ -229,7 +273,7 @@ class NMT(object):
             # decoder_initial_state = decoder.build_initial_state(BATCH_SIZE, [enc_h, enc_c], tf.float32)
             # pred = decoder(dec_input, decoder_initial_state)
             decoder_initial_state = [enc_h, enc_c]
-            pred = self.decoder(dec_input, decoder_initial_state)
+            pred = self.decoder(dec_input, decoder_initial_state, enc_output)
             logits = pred
             loss = self.loss_function(real, logits)
 
@@ -309,7 +353,7 @@ class NMT(object):
         state = decoder_initial_state
         for t in range(self.max_length_output):
             # print(dec_input.shape)
-            predictions, state = self.decoder.one_step(dec_input, state)
+            predictions, state = self.decoder.one_step(dec_input, state, enc_out)
     #         predictions, dec_hidden, attention_weights = decoder(dec_input,
     #                                                              dec_hidden,
     #                                                              enc_out)
@@ -342,13 +386,15 @@ class NMT(object):
         print('Predicted translation: {}'.format(result))
         return result
 
-nmt = NMT(checkpoint_dir='./training_pure_checkpoints',
+
+nmt = NMT(checkpoint_dir='./training_attention_checkpoints',
           num_examples=57313,
-          epochs=20
+          epochs=20,
+          attention='Bahdanau'
          )
 nmt.build_dataset('./chn-eng.tsv')
 nmt.build_model()
-nmt.restore_weights()
+# nmt.restore_weights()
 
 nmt.translate("How old are you ?")
 nmt.train()
