@@ -4,12 +4,16 @@ import io
 import os
 import re
 import time
+import json
+import argparse
 import unicodedata
 
 import jieba
 import tensorflow as tf
 from opencc import OpenCC
 from sklearn.model_selection import train_test_split
+from nltk.translate.bleu_score import sentence_bleu
+
 
 os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
@@ -26,10 +30,10 @@ class NMTDataset(object):
         self.inp_lang_tokenizer = None
         self.targ_lang_tokenizer = None
 
-    def preprocess_sentence(self, w, sent_type):
+    @staticmethod
+    def preprocess_sentence(w, sent_type):
         if sent_type == 'chn':
             w = OpenCC('t2s').convert(w)
-            # w = ' '.join(w) # TODO：可以考虑切词
             w = ' '.join(list(jieba.cut(w)))
         w = w.lower().translate(table)
         w = re.sub(r"([?.!,¿])", r" \1 ", w)
@@ -37,11 +41,12 @@ class NMTDataset(object):
         w = '<start> ' + w.strip() + ' <end>'
         return w
 
-    def create_dataset(self, path, num_examples=None):
+    @staticmethod
+    def create_dataset(path, num_examples=None):
         # path : path to chn-eng.txt file
         # num_examples : Limit the total number of training example for faster training (set num_examples = len(lines) to use full data)
         lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
-        word_pairs = [[self.preprocess_sentence(w, s_type) for w, s_type in zip(l.split('\t')[1::2], ['chn', 'eng'])]  for l in lines[:num_examples]]
+        word_pairs = [[NMTDataset.preprocess_sentence(w, s_type) for w, s_type in zip(l.split('\t')[1::2], ['chn', 'eng'])]  for l in lines[:num_examples]]
 
         return zip(*word_pairs)
 
@@ -72,15 +77,12 @@ class NMTDataset(object):
         file_path = self.file_path
         input_tensor, target_tensor, self.inp_lang_tokenizer, self.targ_lang_tokenizer = self.load_dataset(file_path, num_examples)
 
-        input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val = train_test_split(input_tensor, target_tensor, test_size=0.2)
 
-        train_dataset = tf.data.Dataset.from_tensor_slices((input_tensor_train, target_tensor_train))
+        train_dataset = tf.data.Dataset.from_tensor_slices((input_tensor, target_tensor))
         train_dataset = train_dataset.shuffle(BUFFER_SIZE).batch(BATCH_SIZE, drop_remainder=True)
 
-        val_dataset = tf.data.Dataset.from_tensor_slices((input_tensor_val, target_tensor_val))
-        val_dataset = val_dataset.batch(BATCH_SIZE, drop_remainder=True)
 
-        return train_dataset, val_dataset, self.inp_lang_tokenizer, self.targ_lang_tokenizer
+        return train_dataset, self.inp_lang_tokenizer, self.targ_lang_tokenizer
 
 
 #####
@@ -195,15 +197,10 @@ class BahdanauAttention(tf.keras.layers.Layer):
 
 
 class NMT(object):
-    def __init__(self,
-                 checkpoint_dir,
-                 word_embedding_dim=256,
-                 units=1024,
-                 buffer_size=32000,
-                 batch_size=64,
-                 epochs=5,
-                 attention=None,
-                 num_examples=None
+    def __init__(self, checkpoint_dir, word_embedding_dim=256, units=1024,
+                 buffer_size=32000, batch_size=64, epochs=5,
+                 attention=None, num_examples=None, config_file='nmt.config',
+                 is_train=False, train_file=None, is_eval=False, test_file=None,
                 ):
 
         self.word_embedding_dim = word_embedding_dim
@@ -214,13 +211,53 @@ class NMT(object):
         self.num_examples = num_examples
         self.checkpoint_dir = checkpoint_dir
         self.attention = attention
+        self.config_file = config_file
+        self.is_train = is_train
+        self.train_file = train_file
+        if self.is_train:
+            self.build_dataset(train_file)
+            self.build_model()
+            self.train()
+        else:
+            self.restore_config()
+            self.build_model()
+            self.restore_weights()
 
+        if is_eval:
+            self.evaluate_data(test_file)
+
+
+
+    def restore_config(self, config_file=None):
+        if config_file is None:
+            config_file = self.config_file
+
+        lines = io.open(config_file).read().strip()
+        config = json.loads(lines)
+        self.inp_lang = tf.keras.preprocessing.text.tokenizer_from_json(
+            config['inp_lang_tokenizer'])
+        self.targ_lang = tf.keras.preprocessing.text.tokenizer_from_json(
+            config['targ_lang_tokenizer'])
+        self.vocab_inp_size = len(self.inp_lang.word_index)+1
+        self.vocab_tar_size = len(self.targ_lang.word_index)+1
+        self.max_length_input = config['max_length_input']
+        self.max_length_output = config['max_length_output']
+
+    def save_config(self, config_file):
+        config = {}
+        config['inp_lang_tokenizer'] = self.inp_lang.to_json()
+        config['targ_lang_tokenizer'] = self.targ_lang.to_json()
+        config['max_length_input'] = self.max_length_input
+        config['max_length_output'] = self.max_length_output
+
+        with open(config_file, 'w') as f:
+            f.write(json.dumps(config, ensure_ascii=False))
 
 
     def build_dataset(self, file_path):
 
         self.dataset_creator = NMTDataset(file_path)
-        self.train_dataset, self.val_dataset, self.inp_lang, self.targ_lang = \
+        self.train_dataset, self.inp_lang, self.targ_lang = \
             self.dataset_creator.call(self.buffer_size, self.batch_size, self.num_examples)
 
         self.vocab_inp_size=len(self.inp_lang.word_index)+1
@@ -228,6 +265,8 @@ class NMT(object):
         example_input_batch, example_target_batch = next(iter(self.train_dataset))
         self.max_length_input=example_input_batch.shape[1]
         self.max_length_output=example_target_batch.shape[1]
+
+        self.save_config(self.config_file)
 
     def build_model(self):
         self.encoder = Encoder(self.vocab_inp_size, self.word_embedding_dim,
@@ -287,7 +326,6 @@ class NMT(object):
         if not train_dataset:
             train_dataset = self.train_dataset
         # EPOCHS = 10
-        steps_per_epoch = self.num_examples//self.batch_size
 
         for epoch in range(self.epochs):
             start = time.time()
@@ -296,7 +334,7 @@ class NMT(object):
             total_loss = 0
             # print(enc_hidden[0].shape, enc_hidden[1].shape)
 
-            for (batch, (inp, targ)) in enumerate(train_dataset.take(steps_per_epoch)):
+            for (batch, (inp, targ)) in enumerate(train_dataset):
                 batch_loss = self.train_step(inp, targ, enc_hidden)
                 total_loss += batch_loss
 
@@ -307,6 +345,8 @@ class NMT(object):
             # saving (checkpoint) the model every 2 epochs
             if (epoch + 1) % 2 == 0:
                 self.checkpoint.save(file_prefix = self.checkpoint_prefix)
+
+            steps_per_epoch = batch + 1
 
             print('Epoch {} Loss {:.4f}'.format(epoch + 1,
                                               total_loss / steps_per_epoch))
@@ -326,11 +366,12 @@ class NMT(object):
 
         # Preprocess the sentence given
         # sentence = preprocess_sentence(sentence)
-        sentence = self.dataset_creator.preprocess_sentence(sentence, 'eng')
+        sentence = NMTDataset.preprocess_sentence(sentence, 'eng')
 
 
         # Fetch the indices concerning the words in the sentence and pad the sequence
-        inputs = [self.inp_lang.word_index[i] for i in sentence.split(' ')]
+        # inputs = [self.inp_lang.word_index[i] for i in sentence.split(' ')]
+        inputs = self.inp_lang.texts_to_sequences([sentence])[0]
         inputs = tf.keras.preprocessing.sequence.pad_sequences([inputs],
                                                           maxlen=self.max_length_input,
                                                           padding='post')
@@ -339,7 +380,7 @@ class NMT(object):
         inputs = tf.convert_to_tensor(inputs)
         inference_batch_size = inputs.shape[0]
 
-        result = ''
+        result = '<start> '
         enc_start_state = [tf.zeros((inference_batch_size, self.units)),
                            tf.zeros((inference_batch_size, self.units))]
         enc_out, enc_h, enc_c = self.encoder(inputs, enc_start_state)
@@ -386,16 +427,42 @@ class NMT(object):
         print('Predicted translation: {}'.format(result))
         return result
 
+    def evaluate_data(self, test_file):
+        targets, inputs = NMTDataset.create_dataset(test_file)
+        bleu_score = 0
+        targets_len = len(targets)
+        for i in range(targets_len):
+            hypothesis = self.translate(inputs[i]).strip().split()[1:-1]
+            reference = [targets[i].strip().split()[1:-1]]
+            print(hypothesis, reference)
+            print(targets[i], inputs[i], self.translate(inputs[i]))
+            bleu_score += sentence_bleu(reference, hypothesis)
+        print("BLEU Score: {}".format(bleu_score / targets_len))
+
+
+
+
+parser = argparse.ArgumentParser(description='Process NMT parameters.')
+parser.add_argument('--is_train', dest='is_train', action='store_true')
+parser.add_argument('--train_file', dest='train_file', default=None)
+parser.set_defaults(is_train=False)
+
+parser.add_argument('--is_eval', dest='is_eval', action='store_true')
+parser.add_argument('--test_file', dest='test_file', default=None)
+parser.set_defaults(is_eval=False)
+
+parser.print_help()
+args = parser.parse_args()
 
 nmt = NMT(checkpoint_dir='./training_attention_checkpoints',
-          num_examples=57313,
-          epochs=20,
-          attention='Bahdanau'
+          num_examples=1000,
+          epochs=2,
+          attention='Bahdanau',
+          is_train=args.is_train,
+          train_file=args.train_file,
+          is_eval=args.is_eval,
+          test_file=args.test_file
          )
-nmt.build_dataset('./chn-eng.tsv')
-nmt.build_model()
-# nmt.restore_weights()
 
-nmt.translate("How old are you ?")
-nmt.train()
+
 nmt.translate("How old are you ?")
