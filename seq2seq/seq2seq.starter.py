@@ -1,4 +1,5 @@
-#-*- coding:utf8 -*-
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 import io
 import os
@@ -9,7 +10,9 @@ import argparse
 import unicodedata
 
 import jieba
+import numpy as np
 import tensorflow as tf
+
 from opencc import OpenCC
 from sklearn.model_selection import train_test_split
 from nltk.translate.bleu_score import sentence_bleu
@@ -131,10 +134,9 @@ class Decoder(tf.keras.Model):
             self.attention = BahdanauAttention(self.dec_units)
 
     def one_step(self, inputs, state, enc_outputs):
-        # inputs.shape = (batch_sz, )
+        # inputs.shape = (batch_sz, 1)
         # x.shape = (batch_sz, emb_dim)
-        x = self.embedding(inputs)
-        # output.shape = (batch_sz, 1, dec_units)
+        x = tf.squeeze(self.embedding(inputs), axis=1)
         # print(x.shape, state[0].shape, state[1].shape)
 
         if self.attention:
@@ -147,6 +149,9 @@ class Decoder(tf.keras.Model):
         return output, states
 
     def call(self, inputs, initial_state, enc_outputs):
+        # inputs: (batch_size, feature_size)
+        # initial_state: list of (batch_size, units)
+        # enc
         outputs = []
         total_steps = inputs.shape[1]
         states = initial_state
@@ -207,6 +212,7 @@ class NMT(object):
         self.units = units
         self.buffer_size = buffer_size
         self.batch_size = batch_size
+        self.beam_size = 3
         self.epochs = epochs
         self.num_examples = num_examples
         self.checkpoint_dir = checkpoint_dir
@@ -359,7 +365,201 @@ class NMT(object):
             checkpoint_dir = self.checkpoint_dir
         self.checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 
-    def evaluate_greedy(self, sentence):
+    def decode_beam_search(self, sentences):
+
+        sentences = [NMTDataset.preprocess_sentence(line, 'eng') for line in sentences]
+
+        inputs = self.inp_lang.texts_to_sequences(sentences)
+        #print(inputs)
+        inputs = tf.keras.preprocessing.sequence.pad_sequences(inputs,
+                                                          maxlen=self.max_length_input,
+                                                          padding='post')
+        #print(inputs)
+
+        # Convert the inputs to tensors
+        inputs = tf.convert_to_tensor(inputs)
+        inference_batch_size = inputs.shape[0]
+
+        result = '<start> '
+        enc_start_state = [tf.zeros((inference_batch_size, self.units)),
+                           tf.zeros((inference_batch_size, self.units))]
+        enc_out, enc_h, enc_c = self.encoder(inputs, enc_start_state)
+        # print(enc_h.shape, enc_c.shape)
+        decoder_initial_state = [enc_h, enc_c]
+        # dec_input: (batch_size, 1)
+        dec_input = tf.reshape([self.targ_lang.word_index['<start>']] * inference_batch_size, [-1,1])
+
+        # dec_input: (batch_size, beam_size, 1)
+        dec_input = tf.tile(tf.expand_dims(dec_input, axis=1), [1, self.beam_size, 1])
+        # TODO: debug
+#         dec_input = tf.reshape(list(range(1, 1+ self.beam_size * inference_batch_size)),
+#                                [inference_batch_size, self.beam_size, 1]
+#                               )
+        print('dec_input.shape:', dec_input.shape)
+
+        beam_state_list = [decoder_initial_state] * self.beam_size
+        beam_log_probs = tf.zeros((inference_batch_size, self.beam_size, 1))
+        # (batch_size, beam_size, 1)
+        beam_path_list = tf.tile(
+            tf.reshape([self.targ_lang.word_index['<start>']], [1,1,1]),
+            [inference_batch_size, self.beam_size, 1])
+        # TODO: debug
+        # beam_path_list = dec_input
+        print(dec_input.shape, decoder_initial_state[0].shape, decoder_initial_state[1].shape)
+        finished_buffer_size = self.beam_size * self.beam_size
+        finished_path = np.zeros((inference_batch_size, finished_buffer_size, self.max_length_output), dtype=int)
+        finished_probs = np.zeros((inference_batch_size, finished_buffer_size))
+        finished_counts = [0] * inference_batch_size
+        for t in range(self.max_length_output):
+            # print(dec_input.shape)
+            # TODO: 当前还是取下标的方式，后续改成batch_size * beam_size的方式
+            bfs_result = []
+            for bid in range(self.beam_size):
+                # dec_input: (batch_size, 1)
+                inputs = dec_input[:,bid,:]
+                #print(t, bid, inputs)
+                logits, state = self.decoder.one_step(inputs, beam_state_list[bid], enc_out)
+                #print(logits.shape)
+                log_probs = logits - tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
+
+                log_probs += beam_log_probs[:,bid]
+                # topk_indexs = np.argpartition(log_probs, -beam_size)[:,-beam_size:]
+                topk_values, topk_indices = tf.nn.top_k(log_probs, self.beam_size)
+                print("Time {}, iter beam {}".format(t, bid))
+                print('  topk_values', topk_values)
+                print('  topk_indices', topk_indices)
+                bfs_result.append((state, topk_values, topk_indices))
+
+
+
+
+                for batch_id in range(topk_indices.shape[0]):
+                    print(' input word', self.targ_lang.index_word[inputs[batch_id, 0].numpy()])
+                    for predicted_id in topk_indices[batch_id]:
+        #                 if predicted_id not in self.targ_lang.index_word:
+        #                     continue
+                        print('\t', predicted_id, self.targ_lang.index_word[predicted_id.numpy()],
+                              np.exp(log_probs[batch_id][predicted_id]))
+                    print('-' * 10)
+                # 对于start只需要search一次。
+                if t == 0:
+                    break
+            # END OF beam loop
+            # 构造新的输入
+            beam_log_probs = tf.concat([x[1] for x in bfs_result], axis=1)
+            beam_pred_ids = tf.concat([x[2] for x in bfs_result], axis=1)
+
+
+            # handle path
+            if t > 0:
+                beam_path_list_expand = tf.reshape(
+                    tf.tile(beam_path_list, [1, 1, self.beam_size]),
+                    [inference_batch_size, self.beam_size * self.beam_size, -1])
+                beam_state_list = [x[0] for x in bfs_result]
+            else:
+                beam_path_list_expand = beam_path_list
+                beam_state_list = [bfs_result[0][0]] * self.beam_size
+                # [inference_batch_size, self.beam_size * self.beam_size, -1])
+            new_path = tf.concat([beam_path_list_expand, tf.expand_dims(beam_pred_ids, -1)], axis=-1)
+
+           # find finished result
+            finished_indices = tf.where(beam_pred_ids == nmt.targ_lang.word_index['<end>'])
+
+            if finished_indices.shape[0] > 0:
+                print('handle finised, finished_indices', finished_indices)
+                for i in range(finished_indices.shape[0]):
+                    batch_id, end_id = finished_indices[i].numpy()
+                    if finished_counts[batch_id] >= finished_buffer_size:
+                        continue
+                    # print('debug', batch_id, end_id, finished_counts[batch_id] )
+                    finished_probs[batch_id][finished_counts[batch_id]] = \
+                        np.exp(beam_log_probs[batch_id][end_id].numpy())
+                    cur_finished_path = new_path[batch_id][end_id].numpy()
+                    for j in range(len(cur_finished_path)):
+                        finished_path[batch_id][finished_counts[batch_id]][j] = cur_finished_path[j]
+                    finished_counts[batch_id] += 1
+                # 将已完成的概率降权，使topk无法取到。
+                print('debug', beam_log_probs)
+                beam_log_probs = beam_log_probs + \
+                    tf.cast(beam_pred_ids == nmt.targ_lang.word_index['<end>'], tf.float32)\
+                        * tf.reduce_min(beam_log_probs)
+
+                print('finished_probs:', finished_probs)
+                print('finished_path:', finished_path)
+
+
+            # get top k gather index
+            values, indices = tf.nn.top_k(beam_log_probs, self.beam_size)
+            beam_log_probs = tf.expand_dims(values, -1)
+
+
+            rows = tf.tile(
+                tf.reshape(tf.range(inference_batch_size), [inference_batch_size, 1, 1]),
+                [1, self.beam_size, 1])
+            gather_index = tf.concat([rows, tf.expand_dims(indices, -1)], axis=-1)
+
+
+            dec_input = tf.expand_dims(tf.gather_nd(beam_pred_ids, gather_index), -1)
+            beam_path_list = tf.gather_nd(new_path, gather_index)
+            # print('beam_path_list_expand:', beam_path_list_expand)
+            print('new_path:', beam_path_list)
+            print('beam best translate:')
+            for batch_id in range(beam_path_list.shape[0]):
+                for beam_id in range(beam_path_list.shape[1]):
+                    line = ' '.join([self.targ_lang.index_word[predict_id.numpy()] \
+                     for predict_id in beam_path_list[batch_id][beam_id]])
+                    print('batch_id {}, beam_id {}, prob {}, {}'.format(
+                        batch_id, beam_id,
+                        np.exp(beam_log_probs[batch_id][beam_id][0].numpy()),
+                        line))
+            if sum(finished_counts) == len(finished_counts) * finished_buffer_size:
+                print('buffer full filled')
+                break
+        final_probs = []
+        final_result = []
+        for batch_id, max_index in enumerate(np.argmax(finished_probs, axis=1)):
+            final_probs.append(finished_probs[batch_id][max_index])
+            final_result.append(' '.join(
+                [self.targ_lang.index_word[wid]\
+                    for wid in filter(
+                        lambda x: x > 0, finished_path[batch_id][max_index])]))
+
+        return final_result, final_probs, finished_probs, finished_path
+
+
+            # return bfs_result
+            # beam_path_list = [x[0] for x in bfs_result]
+            # break
+            #dec_input = tf.reshape([predicted_id], [-1,])
+
+#         # 初始概率为0
+#         beam_size = 3
+#         initial_log_probs = tf.constant([[0.] + [-INF] * (beam_size - 1)])
+#         alive_log_probs = tf.tile(initial_log_probs, [inference_batch_size, 1])
+
+#         def _expand_to_beam_size(tensor, beam_size):
+#             """Tiles a given tensor by beam_size.
+#             Args:
+#             tensor: tensor to tile [batch_size, ...]
+#             beam_size: How much to tile the tensor by.
+#             Returns:
+#             Tiled tensor [batch_size, beam_size, ...]
+#             """
+#             tensor = tf.expand_dims(tensor, axis=1)
+#             tile_dims = [1] * tensor.shape.ndims
+#             tile_dims[1] = beam_size
+
+#             return tf.tile(tensor, tile_dims)
+
+#         # Expand each batch and state to beam_size
+#         initial_ids = dec_input
+#         # (inference_batch_size, beam_size)
+#         alive_seq = _expand_to_beam_size(initial_ids, beam_size)
+#         alive_seq = tf.expand_dims(alive_seq, axis=2)  # (batch_size, beam_size, 1)
+
+
+
+    def decode_greedy(self, sentence):
 
         # Attention plot (to be plotted later on) -- initialized with max_lengths of both target and input
         # attention_plot = np.zeros((max_length_output, max_length_input))
@@ -383,12 +583,13 @@ class NMT(object):
         result = '<start> '
         enc_start_state = [tf.zeros((inference_batch_size, self.units)),
                            tf.zeros((inference_batch_size, self.units))]
+        print('debug', inputs.shape)
         enc_out, enc_h, enc_c = self.encoder(inputs, enc_start_state)
 
         decoder_initial_state = [enc_h, enc_c]
-
-        dec_input = tf.reshape([self.targ_lang.word_index['<start>']], [-1,])
-        # print(dec_input.shape)
+        # dec_input: ()
+        dec_input = tf.reshape([self.targ_lang.word_index['<start>']], [-1,1])
+        print(dec_input.shape)
 
         # Loop until the max_length is reached for the target lang (ENGLISH)
         state = decoder_initial_state
@@ -415,12 +616,12 @@ class NMT(object):
                 return result
 
             # The predicted ID is fed back into the model
-            dec_input = tf.reshape([predicted_id], [-1,])
+            dec_input = tf.reshape([predicted_id], [-1,1])
 
         return result# , sentence# , attention_plot
 
     def translate(self, sentence):
-        result = self.evaluate_greedy(sentence)
+        result = self.decode_greedy(sentence)
         # print(result)
         # result = self.targ_lang.sequences_to_texts(result)
         print('Input: %s' % (sentence))
@@ -454,6 +655,11 @@ parser.set_defaults(is_eval=False)
 parser.print_help()
 args = parser.parse_args()
 
+
+# nmt = NMT(checkpoint_dir='./training_attention_checkpoints',
+#           attention='Bahdanau')
+# nmt.translate("How old are you ?")
+
 nmt = NMT(checkpoint_dir='./training_attention_checkpoints',
           num_examples=1000,
           epochs=2,
@@ -464,5 +670,12 @@ nmt = NMT(checkpoint_dir='./training_attention_checkpoints',
           test_file=args.test_file
          )
 
+result = nmt.decode_beam_search(["How old are you ?",
+                                 "What is your name ?",
+                                 "She's a nurse",
+                                 "I received your letter.",
+                                ])
+print(result)
 
 nmt.translate("How old are you ?")
+
