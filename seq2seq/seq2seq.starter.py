@@ -134,32 +134,18 @@ class Decoder(tf.keras.Model):
         self.lstm_cell = tf.keras.layers.LSTMCell(self.dec_units)
 
         self.fc = tf.keras.layers.Dense(vocab_size)
-        self.attention = None
-        if attention == 'Bahdanau':
-            self.attention = BahdanauAttention(self.dec_units)
-        elif attention == 'Luong':
-            self.attention = LuongAttention(self.dec_units)
+        self.attention_rnncell = AttentionRNNCellWrapper(self.lstm_cell, attention)
 
 
-    def one_step(self, inputs, state, enc_outputs):
+    def one_step(self, inputs, states, enc_outputs):
         # inputs.shape = (batch_sz, 1)
-        # x.shape = (batch_sz, emb_dim)
         if len(inputs.shape) == 1:
             inputs = tf.expand_dims(inputs, -1)
+        # x.shape = (batch_sz, emb_dim)
         x = tf.squeeze(self.embedding(inputs), axis=1)
-        # print(x.shape, state[0].shape, state[1].shape)
 
-        if self.attention:
-            context_vector, attention_weights = self.attention(state[0], enc_outputs)
-            if self.attention.name == 'BahdanauAttention':
-                x = tf.concat([x, context_vector], axis=1)
-                output, states = self.lstm_cell(x, state)
-            elif self.attention.name == 'LuongAttention':
-                rnn_output, states = self.lstm_cell(x, state)
-                output = tf.concat([rnn_output, context_vector], axis=1)
-                output = self.attention.Wc(output)
-        else:
-            output, states = self.lstm_cell(x, state)
+        output, states = self.attention_rnncell(x, states, enc_outputs)
+        # output, states = self.lstm_cell(x, states, enc_outputs)
 
         # output = tf.reshape(output, [-1, self.dec_units])
         output = self.fc(output)
@@ -182,6 +168,30 @@ class Decoder(tf.keras.Model):
 
 
 # Attention Mechanism
+
+class AttentionRNNCellWrapper(tf.keras.layers.Layer):
+    def __init__(self, cell, attention):
+        super(AttentionRNNCellWrapper, self).__init__()
+        self.cell = cell
+        self.attention = None
+        if attention == 'Bahdanau':
+            self.attention = BahdanauAttention(cell.units)
+        elif attention == 'Luong':
+            self.attention = LuongAttention(cell.units)
+
+    def call(self, inputs, states, enc_outputs):
+        if not self.attention:
+            return self.cell(inputs, states)
+
+        context_vector, attention_weights = self.attention(states[0], enc_outputs)
+        if self.attention.name == 'BahdanauAttention':
+            inputs = tf.concat([inputs, context_vector], axis=1)
+            output, states = self.cell(inputs, states)
+        elif self.attention.name == 'LuongAttention':
+            rnn_output, states = self.cell(inputs, states)
+            output = tf.concat([rnn_output, context_vector], axis=1)
+            output = self.attention.Wc(output)
+        return output, states
 
 class LuongAttention(tf.keras.layers.Layer):
     def __init__(self, units):
