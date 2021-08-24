@@ -137,19 +137,31 @@ class Decoder(tf.keras.Model):
         self.attention = None
         if attention == 'Bahdanau':
             self.attention = BahdanauAttention(self.dec_units)
+        elif attention == 'Luong':
+            self.attention = LuongAttention(self.dec_units)
+
 
     def one_step(self, inputs, state, enc_outputs):
         # inputs.shape = (batch_sz, 1)
         # x.shape = (batch_sz, emb_dim)
+        if len(inputs.shape) == 1:
+            inputs = tf.expand_dims(inputs, -1)
         x = tf.squeeze(self.embedding(inputs), axis=1)
         # print(x.shape, state[0].shape, state[1].shape)
 
         if self.attention:
             context_vector, attention_weights = self.attention(state[0], enc_outputs)
-            x = tf.concat([x, context_vector], axis=1)
+            if self.attention.name == 'BahdanauAttention':
+                x = tf.concat([x, context_vector], axis=1)
+                output, states = self.lstm_cell(x, state)
+            elif self.attention.name == 'LuongAttention':
+                rnn_output, states = self.lstm_cell(x, state)
+                output = tf.concat([rnn_output, context_vector], axis=1)
+                output = self.attention.Wc(output)
+        else:
+            output, states = self.lstm_cell(x, state)
 
-        output, states = self.lstm_cell(x, state)
-        output = tf.reshape(output, [-1, self.dec_units])
+        # output = tf.reshape(output, [-1, self.dec_units])
         output = self.fc(output)
         return output, states
 
@@ -170,16 +182,60 @@ class Decoder(tf.keras.Model):
 
 
 # Attention Mechanism
+
+class LuongAttention(tf.keras.layers.Layer):
+    def __init__(self, units):
+        super(LuongAttention, self).__init__(name='LuongAttention')
+
+        self.units = units
+        self.Wa = tf.keras.layers.Dense(units)
+        self.Wc = tf.keras.layers.Dense(units, activation='tanh')
+
+    def call(self, query, values):
+        assert query.shape[-1] == self.units, \
+            "Query dim mismatch Luong Attention, {} vs {}".format(query.shape, self.units)
+        # query:
+        #   shape == (batch_size, hidden size) h_t in paper, 
+        #   hidden state of target at current timestep
+        # values:
+        #   shape == (batch_size, max_len, hidden size) h_s in paper, h_s,j is value[:,j,:]
+        #   hidden states of source
+        # score:
+        #    shape == (batch_size, max_len, 1)
+        #    = h_t (dot) Wa (dot) h_s
+        query_with_time_axis = tf.expand_dims(query, 1)
+        score = tf.keras.layers.dot([self.Wa(query_with_time_axis), values], axes=(2, 2))
+
+        # 为了和Bahdanau保持一致。还有一种写法是
+        # attention_weights = tf.nn.softmax(score, axis=2) # shape=(batch, 1, max_len)
+        # context_vector = tf.matmul(attention_weights, values) # shape=(batch, 1, units)
+        # context_vector = tf.squeeze(context_vector, 1) # shape=(batch, units)
+        score = tf.reshape(score, [-1, values.shape[1], 1])
+        attention_weights = tf.nn.softmax(score, axis=1)
+
+        # context_vector shape after sum == (batch_size, hidden_size)
+        context_vector = attention_weights * values
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights
+
+
+
+
 class BahdanauAttention(tf.keras.layers.Layer):
     def __init__(self, units):
-        super(BahdanauAttention, self).__init__()
+        super(BahdanauAttention, self).__init__(name='BahdanauAttention')
         self.W1 = tf.keras.layers.Dense(units)
         self.W2 = tf.keras.layers.Dense(units)
         self.V = tf.keras.layers.Dense(1)
 
     def call(self, query, values):
-        # query hidden state shape == (batch_size, hidden size) s_i in paper
-        # values shape == (batch_size, max_len, hidden size) h in paper, h_j is value[:,j,:]
+        # query:
+        #   shape == (batch_size, hidden size) s_i in paper
+        #   hidden state of decoder at current timestep
+        # values:
+        #   shape == (batch_size, max_len, hidden size) h in paper, h_j is value[:,j,:]
+        #   hidden states of encoder
 
         # we are doing this to broadcast addition along the time axis to calculate the score
         # query_with_time_axis shape == (batch_size, 1, hidden size)
@@ -645,6 +701,7 @@ parser.add_argument('--test_file', dest='test_file', default=None)
 parser.set_defaults(is_eval=False)
 
 parser.add_argument('--search_type', dest='search_type', default='beam')
+parser.add_argument('--attention', dest='attention', default='None')
 
 parser.print_help()
 args = parser.parse_args()
@@ -657,7 +714,7 @@ args = parser.parse_args()
 nmt = NMT(checkpoint_dir='./training_attention_checkpoints',
           num_examples=1000,
           epochs=2,
-          attention='Bahdanau',
+          attention=args.attention,
           is_train=args.is_train,
           train_file=args.train_file,
           is_eval=args.is_eval,
