@@ -438,132 +438,132 @@ class Decoder(tf.keras.layers.Layer):
                                        mask=[embedding_mask, mask])
         return x
 
-
-examples, metadata = tfds.load('ted_hrlr_translate/pt_to_en', with_info=True,
-                               as_supervised=True)
-train_examples, val_examples = examples['train'], examples['validation']
-
-
-tokenizer_en = tfds.deprecated.text.SubwordTextEncoder.build_from_corpus(
-    (en.numpy() for pt, en in train_examples), target_vocab_size=2**13)
-
-tokenizer_pt = tfds.deprecated.text.SubwordTextEncoder.build_from_corpus(
-    (pt.numpy() for pt, en in train_examples), target_vocab_size=2**13)
-
-
-def encode(lang1, lang2):
-    lang1 = [tokenizer_pt.vocab_size] + tokenizer_pt.encode(
-        lang1.numpy()) + [tokenizer_pt.vocab_size+1]
-
-    lang2 = [tokenizer_en.vocab_size] + tokenizer_en.encode(
-      lang2.numpy()) + [tokenizer_en.vocab_size+1]
-
-    return lang1, lang2
-
-def tf_encode(pt, en):
-    result_pt, result_en = tf.py_function(encode, [pt, en], [tf.int64, tf.int64])
-    result_pt.set_shape([None])
-    result_en.set_shape([None])
-
-    return result_pt, result_en
-
-BUFFER_SIZE = 20000
-BATCH_SIZE = 64
-MAX_LENGTH = 40
-
-def filter_max_length(x, y, max_length=MAX_LENGTH):
-    return tf.logical_and(tf.size(x) <= max_length,
-                        tf.size(y) <= max_length)
-
-
-train_dataset = train_examples.map(tf_encode)
-train_dataset = train_dataset.filter(filter_max_length)
-# cache the dataset to memory to get a speedup while reading from it.
-train_dataset = train_dataset.cache()
-train_dataset = train_dataset.shuffle(BUFFER_SIZE).padded_batch(BATCH_SIZE)
-train_dataset = train_dataset.prefetch(tf.data.experimental.AUTOTUNE)
-
-
-val_dataset = val_examples.map(tf_encode)
-val_dataset = val_dataset.filter(filter_max_length).padded_batch(BATCH_SIZE)
-
-
-num_layers = 4
-d_model = 128
-dff = 512
-num_heads = 8
-
-dropout_rate = 0.1
-
-input_vocab_size = tokenizer_pt.vocab_size + 2
-target_vocab_size = tokenizer_en.vocab_size + 2
-
-
-inputs = tf.keras.layers.Input(shape=(None, ))
-targets = tf.keras.layers.Input(shape=(None, ))
-encoder = Encoder(input_vocab_size, num_layers = num_layers, d_model = d_model, n_head = num_heads, dff = dff, dropout = dropout_rate)
-decoder = Decoder(target_vocab_size, num_layers = num_layers, d_model = d_model, n_head = num_heads, dff = dff, dropout = dropout_rate)
-
-x = encoder(inputs)
-x = decoder([targets, x] , mask = encoder.embedding.compute_mask(inputs))
-#  tf.keras.layers.Masking ??
-x = tf.keras.layers.Dense(target_vocab_size)(x)
-
-model = tf.keras.models.Model(inputs=[inputs, targets], outputs=x)
-model.summary()
-
-
-class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
-    def __init__(self, d_model, warmup_steps=4000):
-        super(CustomSchedule, self).__init__()
-
-        self.d_model = d_model
-        self.d_model = tf.cast(self.d_model, tf.float32)
-
-        self.warmup_steps = warmup_steps
-
-    def __call__(self, step):
-        arg1 = tf.math.rsqrt(step)
-        arg2 = step * (self.warmup_steps ** -1.5)
-        return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
-
-optimizer = tf.keras.optimizers.Adam(CustomSchedule(d_model), beta_1=0.9, beta_2=0.98,
-                                     epsilon=1e-9)
-
-loss = tf.losses.SparseCategoricalCrossentropy(from_logits=True)
-
-def masked_loss(y_true, y_pred):
-    mask = tf.math.logical_not(tf.math.equal(y_true, 0))
-    _loss = loss(y_true, y_pred)
-
-    mask = tf.cast(mask, dtype=_loss.dtype)
-    _loss *= mask
-
-    return tf.reduce_sum(_loss)/tf.reduce_sum(mask)
-
-
-metrics = [loss, masked_loss, tf.keras.metrics.SparseCategoricalAccuracy()]
-
-model.compile(optimizer=optimizer, loss = loss, metrics = metrics) # masked_
-
-def generator(data_set):
-    cnt = 0
-    while cnt < 100:
-        cnt += 1
-        for pt_batch, en_batch in data_set:
-            yield ( [pt_batch , en_batch[:, :-1] ] , en_batch[:, 1:] )
-
-num_batches = 0
-for (batch, (_,_)) in enumerate(train_dataset):
-    num_batches = batch
-print(num_batches)
-
-val_batches = 0
-for (batch, (_,_)) in enumerate(val_dataset):
-    val_batches = batch
-print(val_batches)
-
-history = model.fit(x = generator(train_dataset),
-                    validation_data = generator(val_dataset),
-                    epochs=20, steps_per_epoch = num_batches,
-                    validation_steps = val_batches)
+# 
+# examples, metadata = tfds.load('ted_hrlr_translate/pt_to_en', with_info=True,
+#                                as_supervised=True)
+# train_examples, val_examples = examples['train'], examples['validation']
+# 
+# 
+# tokenizer_en = tfds.deprecated.text.SubwordTextEncoder.build_from_corpus(
+#     (en.numpy() for pt, en in train_examples), target_vocab_size=2**13)
+# 
+# tokenizer_pt = tfds.deprecated.text.SubwordTextEncoder.build_from_corpus(
+#     (pt.numpy() for pt, en in train_examples), target_vocab_size=2**13)
+# 
+# 
+# def encode(lang1, lang2):
+#     lang1 = [tokenizer_pt.vocab_size] + tokenizer_pt.encode(
+#         lang1.numpy()) + [tokenizer_pt.vocab_size+1]
+# 
+#     lang2 = [tokenizer_en.vocab_size] + tokenizer_en.encode(
+#       lang2.numpy()) + [tokenizer_en.vocab_size+1]
+# 
+#     return lang1, lang2
+# 
+# def tf_encode(pt, en):
+#     result_pt, result_en = tf.py_function(encode, [pt, en], [tf.int64, tf.int64])
+#     result_pt.set_shape([None])
+#     result_en.set_shape([None])
+# 
+#     return result_pt, result_en
+# 
+# BUFFER_SIZE = 20000
+# BATCH_SIZE = 64
+# MAX_LENGTH = 40
+# 
+# def filter_max_length(x, y, max_length=MAX_LENGTH):
+#     return tf.logical_and(tf.size(x) <= max_length,
+#                         tf.size(y) <= max_length)
+# 
+# 
+# train_dataset = train_examples.map(tf_encode)
+# train_dataset = train_dataset.filter(filter_max_length)
+# # cache the dataset to memory to get a speedup while reading from it.
+# train_dataset = train_dataset.cache()
+# train_dataset = train_dataset.shuffle(BUFFER_SIZE).padded_batch(BATCH_SIZE)
+# train_dataset = train_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+# 
+# 
+# val_dataset = val_examples.map(tf_encode)
+# val_dataset = val_dataset.filter(filter_max_length).padded_batch(BATCH_SIZE)
+# 
+# 
+# num_layers = 4
+# d_model = 128
+# dff = 512
+# num_heads = 8
+# 
+# dropout_rate = 0.1
+# 
+# input_vocab_size = tokenizer_pt.vocab_size + 2
+# target_vocab_size = tokenizer_en.vocab_size + 2
+# 
+# 
+# inputs = tf.keras.layers.Input(shape=(None, ))
+# targets = tf.keras.layers.Input(shape=(None, ))
+# encoder = Encoder(input_vocab_size, num_layers = num_layers, d_model = d_model, n_head = num_heads, dff = dff, dropout = dropout_rate)
+# decoder = Decoder(target_vocab_size, num_layers = num_layers, d_model = d_model, n_head = num_heads, dff = dff, dropout = dropout_rate)
+# 
+# x = encoder(inputs)
+# x = decoder([targets, x] , mask = encoder.embedding.compute_mask(inputs))
+# #  tf.keras.layers.Masking ??
+# x = tf.keras.layers.Dense(target_vocab_size)(x)
+# 
+# model = tf.keras.models.Model(inputs=[inputs, targets], outputs=x)
+# model.summary()
+# 
+# 
+# class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+#     def __init__(self, d_model, warmup_steps=4000):
+#         super(CustomSchedule, self).__init__()
+# 
+#         self.d_model = d_model
+#         self.d_model = tf.cast(self.d_model, tf.float32)
+# 
+#         self.warmup_steps = warmup_steps
+# 
+#     def __call__(self, step):
+#         arg1 = tf.math.rsqrt(step)
+#         arg2 = step * (self.warmup_steps ** -1.5)
+#         return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
+# 
+# optimizer = tf.keras.optimizers.Adam(CustomSchedule(d_model), beta_1=0.9, beta_2=0.98,
+#                                      epsilon=1e-9)
+# 
+# loss = tf.losses.SparseCategoricalCrossentropy(from_logits=True)
+# 
+# def masked_loss(y_true, y_pred):
+#     mask = tf.math.logical_not(tf.math.equal(y_true, 0))
+#     _loss = loss(y_true, y_pred)
+# 
+#     mask = tf.cast(mask, dtype=_loss.dtype)
+#     _loss *= mask
+# 
+#     return tf.reduce_sum(_loss)/tf.reduce_sum(mask)
+# 
+# 
+# metrics = [loss, masked_loss, tf.keras.metrics.SparseCategoricalAccuracy()]
+# 
+# model.compile(optimizer=optimizer, loss = loss, metrics = metrics) # masked_
+# 
+# def generator(data_set):
+#     cnt = 0
+#     while cnt < 100:
+#         cnt += 1
+#         for pt_batch, en_batch in data_set:
+#             yield ( [pt_batch , en_batch[:, :-1] ] , en_batch[:, 1:] )
+# 
+# num_batches = 0
+# for (batch, (_,_)) in enumerate(train_dataset):
+#     num_batches = batch
+# print(num_batches)
+# 
+# val_batches = 0
+# for (batch, (_,_)) in enumerate(val_dataset):
+#     val_batches = batch
+# print(val_batches)
+# 
+# history = model.fit(x = generator(train_dataset),
+#                     validation_data = generator(val_dataset),
+#                     epochs=20, steps_per_epoch = num_batches,
+#                     validation_steps = val_batches)
