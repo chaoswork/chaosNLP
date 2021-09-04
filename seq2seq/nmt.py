@@ -116,7 +116,7 @@ class NMT(object):
         self.beam_size = 3
         self.epochs = epochs
         self.num_examples = num_examples
-        self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_dir = os.path.join(checkpoint_dir, "ckpt")
         self.attention = attention
         self.config_file = config_file
         self.is_train = is_train
@@ -199,9 +199,9 @@ class NMT(object):
         self.optimizer = tf.keras.optimizers.Adam()
 
         # checkpoint_dir = './training_checkpoints'
-        self.checkpoint_prefix = os.path.join(self.checkpoint_dir, "ckpt")
-        self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer,
-                                              model=self.model)
+        # self.checkpoint_prefix = os.path.join(self.checkpoint_dir, "ckpt")
+        # self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer,
+        #                                       model=self.model)
 
 
     def train(self, train_dataset=None):
@@ -241,7 +241,16 @@ class NMT(object):
         metrics = [loss, masked_loss, tf.keras.metrics.SparseCategoricalAccuracy()]
 
         self.model.compile(optimizer=optimizer, loss = loss, metrics = metrics) # masked_
-        history = self.model.fit(train_dataset, epochs=self.epochs)
+        cp_callback = tf.keras.callbacks.ModelCheckpoint(
+            filepath=self.checkpoint_dir,
+            verbose=1,
+            save_weights_only=True,
+            save_freq="epoch",
+        )
+        history = self.model.fit(train_dataset,
+                                 epochs=self.epochs,
+                                 callbacks=[cp_callback]
+                                 )
                     # validation_data = generator(val_dataset),
                     # epochs=self.epochs, steps_per_epoch = num_batches)
                     # validation_steps = val_batches)
@@ -278,7 +287,8 @@ class NMT(object):
         if not checkpoint_dir:
             checkpoint_dir = self.checkpoint_dir
         print('restore weights from {}'.format(checkpoint_dir))
-        self.checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
+        # self.checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
+        self.model.load_weights(self.checkpoint_dir)
 
     def decode_beam_search(self, sentences, return_probs=False, return_buffers=False):
 
@@ -445,6 +455,7 @@ class NMT(object):
         return final_result
 
     def decode_greedy(self, sentences):
+        print('sentences:', len(sentences))
         return [self.decode_greedy_once(line) for line in sentences]
 
     def decode_greedy_once(self, sentence):
@@ -468,46 +479,25 @@ class NMT(object):
         inputs = tf.convert_to_tensor(inputs)
         inference_batch_size = inputs.shape[0]
 
-        result = ['<start>']
-        enc_start_state = [tf.zeros((inference_batch_size, self.units)),
-                           tf.zeros((inference_batch_size, self.units))]
+        result = [self.targ_lang.word_index['<start>']]
         logging.debug('debug', inputs.shape)
 
         # dec_input: ()
-        dec_input = tf.reshape([self.targ_lang.word_index['<start>']], [-1,1])
+        dec_input = tf.reshape(result, [-1,len(result)])
         logging.debug(dec_input.shape)
 
         # Loop until the max_length is reached for the target lang (ENGLISH)
         for t in range(self.max_length_output):
             predict = self.model.predict([inputs, dec_input])
-            print(inputs.shape, dec_input.shape, predict)
-            break
+            predict_id = np.argmax(predict[-1,-1])
+            result.append(predict_id)
+            if predict_id == self.targ_lang.word_index['<end>']:
+                break
+            dec_input = tf.reshape(result, [-1,len(result)])
+            # print(inputs.shape, dec_input.shape, result, predict.shape, predict)
 
-#            # print(dec_input.shape)
-#            predictions, state = self.decoder.one_step(dec_input, state, enc_out)
-#    #         predictions, dec_hidden, attention_weights = decoder(dec_input,
-#    #                                                              dec_hidden,
-#    #                                                              enc_out)
-#
-#            # Store the attention weights to plot later on
-#    #         attention_weights = tf.reshape(attention_weights, (-1, ))
-#    #         attention_plot[t] = attention_weights.numpy()
-#
-#            # Get the prediction with the maximum attention
-#            predicted_id = tf.argmax(predictions[0]).numpy()
-#            # print (predicted_id)
-#
-#            # Append the token to the result
-#            result.append(self.targ_lang.index_word[predicted_id])
-#
-#            # If <end> token is reached, return the result, input, and attention plot
-#            if self.targ_lang.index_word[predicted_id] == '<end>':
-#                break
-#
-#            # The predicted ID is fed back into the model
-#            dec_input = tf.reshape([predicted_id], [-1,1])
 
-        return ' '.join(result)# , sentence# , attention_plot
+        return ' '.join([self.targ_lang.index_word[pid] for pid in result])
 
     def translate(self, sentences, search_type=None):
         if search_type is None:
@@ -582,5 +572,8 @@ nmt = NMT(checkpoint_dir='./training_attention_checkpoints',
 #                                 ])
 # print(result)
 #
-nmt.translate("How old are you ?", search_type='greedy')
+print(nmt.encoder.embedding(0))
+sent_chs = nmt.translate(["How old are you ?"], search_type='greedy')
+print(sent_chs)
+print(nmt.encoder.embedding(0))
 
