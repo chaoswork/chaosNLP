@@ -6,6 +6,8 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
 
+from ..utils.normalization import LayerNormalization
+
 
 
 def get_angles(pos, i, d_model):
@@ -39,12 +41,12 @@ def _lower_triangular_mask(shape):
     col_index = tf.cumsum(tf.ones(shape=shape, dtype=tf.int32), axis=-1)
     return tf.greater_equal(row_index, col_index)
 
-
 class ScaledDotProductAttention(tf.keras.layers.Layer):
-    def __init__(self, use_scale=False, causal=False, **kwargs):
+    def __init__(self, use_scale=False, causal=False, scale_factor=None, **kwargs):
         self.use_scale = use_scale
         self.causal = causal
         self.scale = 1
+        self.scale_factor = scale_factor
         super(ScaledDotProductAttention, self).__init__(**kwargs)
 
     def compute_output_shape(self, input_shape):
@@ -81,8 +83,11 @@ class ScaledDotProductAttention(tf.keras.layers.Layer):
             query_mask, value_mask = None, None
 
         if self.use_scale:
-            feature_dim = query.shape[-1]
-            self.scale = 1 / tf.sqrt(tf.cast(feature_dim, tf.float32))
+            if self.scale_factor is None:
+                feature_dim = query.shape[-1]
+                self.scale = 1 / tf.sqrt(tf.cast(feature_dim, tf.float32))
+            else:
+                self.scale = self.scale_factor
         # (batch, Tq, Tv)
         scores = tf.matmul(query, key, transpose_b=True) * self.scale
         if self.causal:
@@ -107,25 +112,26 @@ class ScaledDotProductAttention(tf.keras.layers.Layer):
             # causal_mask: (1, Tq, Tv)
             # scores_mask: (batch, Tq, Tv)
             scores_mask = tf.logical_and(value_mask, causal_mask)
-
         if scores_mask is not None:
             # 要mask的位置设置一个特别小的数，这样softmax结果为0
             padding_mask = tf.logical_not(scores_mask)
-            scores -= 1.e9 * tf.cast(padding_mask, dtype=tf.float32)
+            # bert这里设置的是1e4, transformer 设置的是1e9
+            scores -= 1.e4 * tf.cast(padding_mask, dtype=tf.float32)
         weight = tf.nn.softmax(scores)
-
         context = tf.matmul(weight, value)
         if query_mask is not None:
             context *= tf.cast(query_mask, context.dtype)
         return context
 
+
 class MultiHeadAttention(tf.keras.layers.Layer):
     def __init__(self, n_head, d_model,
-                 use_scale=False, causal=False,
+                 use_scale=False, causal=False, scale_factor=None,
                  **kwargs):
         super(MultiHeadAttention, self).__init__(**kwargs)
         self.n_head = n_head
         self.d_model = d_model
+        assert self.d_model % self.n_head == 0
         self.d_k = self.d_v = self.d_model // self.n_head
         self.use_scale = use_scale
         self.causal = causal
@@ -137,7 +143,20 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         # self.attention = tf.keras.layers.Attention(causal=self.causal)
         self.attention = ScaledDotProductAttention(
             use_scale=self.use_scale,
-            causal=self.causal)
+            causal=self.causal,
+            scale_factor=scale_factor
+        )
+
+    def build(self, input_shape):
+        if isinstance(input_shape, list):
+            query_shape, value_shape, key_shape = input_shape
+        else:
+            query_shape = value_shape = key_shape = input_shape
+        self.WQ.build(query_shape)
+        self.WK.build(key_shape)
+        self.WV.build(value_shape)
+        self.Wo.build(query_shape[:-1] + (self.n_head * self.d_v,))
+        super(MultiHeadAttention, self).build(input_shape)
 
     def call(self, inputs, mask=None,
              multi_head_type='split_concat', training=None):
@@ -229,28 +248,56 @@ class MultiHeadAttention(tf.keras.layers.Layer):
 
 
 class EncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, n_head, d_model, dff, dropout=0.0, **kwargs):
+    def __init__(self, n_head, d_model, dff, dropout=0.0,
+                 layer_norm_epsilon=1e-12,
+                 attention_use_scale=False, attention_scale_factor=None,
+                 use_query_mask=True, use_value_mask=True,
+                 ff_activation='relu',
+                 **kwargs):
         super(EncoderLayer, self).__init__(**kwargs)
         self.d_model = d_model
+        self.dff = dff
+        self.use_query_mask = use_query_mask
+        self.use_value_mask = use_value_mask
 
         # multihead attention, orange block in the model architecture
-        self.multi_head_attention = MultiHeadAttention(n_head, d_model)
+        self.multi_head_attention = MultiHeadAttention(
+            n_head, d_model,
+            use_scale=attention_use_scale, scale_factor=attention_scale_factor)
+        # self.attention_out_dense = tf.keras.layers.Dense(d_model)
+
         # Residual Dropout: We apply dropout [27] to the output of each sub-layer,
         # before it is added to the sub-layer input and normalized.
         self.dropout_attention = tf.keras.layers.Dropout(dropout)
 
         # Add & Norm, yellow block in the model architecture
         self.add_attention = tf.keras.layers.Add()
-        self.layer_norm_attention = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+#         self.layer_norm_attention = tf.keras.layers.LayerNormalization(
+#             epsilon=layer_norm_epsilon)
+        self.layer_norm_attention = LayerNormalization(
+            epsilon=layer_norm_epsilon)
 
         # Feed forward, blue block in the model architecture
-        self.dense1 = tf.keras.layers.Dense(dff, activation='relu')
+        self.dense1 = tf.keras.layers.Dense(dff, activation=ff_activation)
         self.dense2 = tf.keras.layers.Dense(d_model)
         self.dropout_dense = tf.keras.layers.Dropout(dropout)
 
         # Add & Norm, yellow block in the model architecture
         self.add_dense = tf.keras.layers.Add()
-        self.layer_norm_dense = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+#         self.layer_norm_dense = tf.keras.layers.LayerNormalization(
+#             epsilon=layer_norm_epsilon)
+        self.layer_norm_dense = LayerNormalization(
+            epsilon=layer_norm_epsilon)
+
+    def build(self, input_shape):
+        self.multi_head_attention.build(input_shape)
+        # self.attention_out_dense.build(input_shape)
+        self.layer_norm_attention.build(input_shape)
+        self.dense1.build(input_shape)
+        self.dense2.build(input_shape[:-1] + (self.dff,))
+        self.layer_norm_dense.build(input_shape[:-1] + (self.d_model,))
+        super(EncoderLayer, self).build(input_shape)
+
 
     def call(self, inputs, mask=None, training=None):
         """
@@ -262,12 +309,18 @@ class EncoderLayer(tf.keras.layers.Layer):
         """
         assert inputs.shape[-1] == self.d_model, 'last dim of input tensor should be {d_model}'
         # multihead attention, orange block in the model architecture
+        query_mask = mask if self.use_query_mask else None
+        value_mask = mask if self.use_value_mask else None
 
         attention = self.multi_head_attention(
             [inputs, inputs, inputs], # self attention
-            [mask, mask]
+            [query_mask, value_mask],
+            multi_head_type='transpose_reshape',
         )
+#         if self.bert_encoder:
+#             attention = self.attention_out_dense(attention)
         attention = self.dropout_attention(attention, training)
+
         # Add & Norm, yellow block in the model architecture
         x = self.add_attention([inputs, attention])
         x = self.layer_norm_attention(x)
@@ -315,6 +368,7 @@ class DecoderLayer(tf.keras.layers.Layer):
         # Add & Norm, yellow block in the model architecture
         self.add_dense = tf.keras.layers.Add()
         self.layer_norm_dense = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
 
     def call(self, inputs, mask=None, training=None):
         """
@@ -437,6 +491,7 @@ class Decoder(tf.keras.layers.Layer):
             x = self.decoder_layers[i]([x, encoder_output],
                                        mask=[embedding_mask, mask])
         return x
+
 
 # 
 # examples, metadata = tfds.load('ted_hrlr_translate/pt_to_en', with_info=True,
