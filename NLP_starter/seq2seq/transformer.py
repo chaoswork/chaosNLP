@@ -114,7 +114,7 @@ class ScaledDotProductAttention(tf.keras.layers.Layer):
             scores_mask = tf.logical_and(value_mask, causal_mask)
         if scores_mask is not None:
             # 要mask的位置设置一个特别小的数，这样softmax结果为0
-            padding_mask = tf.logical_not(scores_mask)
+            padding_mask = tf.logical_not(tf.cast(scores_mask, tf.bool))
             # bert这里设置的是1e4, transformer 设置的是1e9
             scores -= 1.e4 * tf.cast(padding_mask, dtype=tf.float32)
         weight = tf.nn.softmax(scores)
