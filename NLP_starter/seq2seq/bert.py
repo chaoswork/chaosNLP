@@ -81,7 +81,6 @@ class BertEmbeddings(tf.keras.layers.Layer):
             config.max_position_embeddings, config.hidden_size,
             name="position_embeddings")
 
-
         # tensorflow的源代码中variance_epsilon=1e-12写死了。
         # /anaconda2/lib/python2.7/site-packages/tensorflow/contrib/layers/python/layers/layers.py
         # self.layer_norm = tf.keras.layers.LayerNormalization(epsilon=layer_norm_epsilon)
@@ -109,6 +108,7 @@ class BertEmbeddings(tf.keras.layers.Layer):
         embeddings = self.dropout(embeddings, training)
         return embeddings
 
+
 class BertEncoder(tf.keras.layers.Layer):
     def __init__(self, config, **kwargs):
         super(BertEncoder, self).__init__(**kwargs)
@@ -122,10 +122,7 @@ class BertEncoder(tf.keras.layers.Layer):
                          attention_scale_factor=1 / math.sqrt(
                              config.hidden_size // config.num_attention_heads),
                          use_query_mask=False,
-                         ff_activation=gelu
-
-                        ) \
-                for _ in range(config.num_hidden_layers)]
+                         ff_activation=gelu) for _ in range(config.num_hidden_layers)]
 
     def build(self, input_shape):
         for layer_module in self.encoder_layers:
@@ -145,6 +142,7 @@ class BertEncoder(tf.keras.layers.Layer):
             prev_output = layer_module(inputs=prev_output, mask=mask, training=training)
             all_encoder_layers_list.append(prev_output)
         return all_encoder_layers_list
+
 
 class BertPooler(tf.keras.layers.Layer):
     def __init__(self, config, **kwargs):
@@ -167,6 +165,7 @@ class BertPooler(tf.keras.layers.Layer):
         first_token_tensor = tf.squeeze(sequence_output[:, 0:1, :], axis=1)
         pooled_output = self.pooled_dense(first_token_tensor)
         return pooled_output
+
 
 class BertModel(tf.keras.layers.Layer):
     def __init__(self, config, **kwargs):
@@ -196,18 +195,16 @@ class BertModel(tf.keras.layers.Layer):
         加载模型
         """
         model_path = '/home/odin/chaohuang/data/chinese_L-12_H-768_A-12/'
-        #tf.compat.v1.train.import_meta_graph(os.path.join(model_path))
+        # tf.compat.v1.train.import_meta_graph(os.path.join(model_path))
         loaded = tf.train.load_checkpoint(os.path.join(model_path, 'bert_model.ckpt'))
         var2shape_map = loaded.get_variable_to_shape_map()
 #         for name in var2shape_map:
 #             print(name, loaded.get_tensor(name).shape)
-        names = []
         for name in var2shape_map:
             name_tree = name.split('/')
             pre_trained_value = loaded.get_tensor(name)
 
             if 'embeddings' in name_tree:
-                layer_norm_weights = {}
                 if name_tree[-1].endswith('embeddings'):
                     getattr(self.embeddings, name_tree[-1]).set_weights([pre_trained_value])
                 else:
@@ -244,19 +241,15 @@ class BertModel(tf.keras.layers.Layer):
                         )
                 elif name_tree[3] == 'intermediate':
                     tf.keras.backend.set_value(
-                            getattr(cur_encoder_layer.dense1, name_tree[5]),
-                            pre_trained_value
-                        )
+                        getattr(cur_encoder_layer.dense1, name_tree[5]),
+                        pre_trained_value)
                 elif name_tree[3] == 'output':
                     map_dict = {
-                            'LayerNorm': cur_encoder_layer.layer_norm_dense,
-                            'dense': cur_encoder_layer.dense2
-                        }
+                        'LayerNorm': cur_encoder_layer.layer_norm_dense,
+                        'dense': cur_encoder_layer.dense2 }
                     tf.keras.backend.set_value(
-                            getattr(map_dict[name_tree[4]], name_tree[5]),
-                            pre_trained_value
-                        )
-
+                        getattr(map_dict[name_tree[4]], name_tree[5]),
+                        pre_trained_value)
 
             elif 'pooler' in name_tree:
                 tf.keras.backend.set_value(
@@ -271,8 +264,7 @@ class BertModel(tf.keras.layers.Layer):
 class PretrainBertModel(object):
     def __init__(self, config, init_checkpoint=None,
                  max_predictions_per_seq=20,
-                 layer_norm_epsilon=1e-12,
-                ):
+                 layer_norm_epsilon=1e-12,):
         self.config = config
         self.config.layer_norm_epsilon = layer_norm_epsilon
         self.config.max_predictions_per_seq = max_predictions_per_seq
@@ -323,9 +315,7 @@ class PretrainBertModel(object):
         self.seq_relationship_dense = tf.keras.layers.Dense(2)
         self.seq_relationship_dense.build((None, self.config.hidden_size))
 
-
         # build model
-
         position_ids = tf.constant(list(range(self.config.max_seq_len)))
 
         pooled_output = self.basic_model(
@@ -339,9 +329,9 @@ class PretrainBertModel(object):
 
         input_tensor = self.cls_pred_tsfm_dense(input_tensor)
         input_tensor = self.cls_pred_tsfm_layer_norm(input_tensor)
-        logits = tf.matmul(input_tensor, output_weights, transpose_b=True)
-        masked_lm_logits = tf.nn.bias_add(logits, self.output_bias)
-        masked_lm_log_probs = tf.nn.log_softmax(logits, axis=-1)
+        masked_lm_logits = tf.matmul(input_tensor, output_weights, transpose_b=True)
+        masked_lm_logits = tf.nn.bias_add(masked_lm_logits, self.output_bias)
+        masked_lm_log_probs = tf.nn.log_softmax(masked_lm_logits, axis=-1)
 
         # next sentence log probs
         next_sentence_logits = self.seq_relationship_dense(pooled_output)
@@ -368,7 +358,6 @@ class PretrainBertModel(object):
         per_example_loss = -tf.reduce_sum(one_hot_labels * next_sentence_log_probs, axis=-1)
         next_sentence_loss = tf.reduce_mean(per_example_loss)
 
-
         total_loss = masked_lm_loss + next_sentence_loss
 
         # inputs = [input_ids, input_mask, segment_ids, masked_lm_positions,
@@ -386,13 +375,11 @@ class PretrainBertModel(object):
             outputs=total_loss)
         self.model.compile('Adam',
                            loss=bert_loss,
-                           metrics=[bert_loss]
-                          )
+                           metrics=[bert_loss])
         return self.model.summary()
 
     def train(self, dataset):
         self.model.fit(x=dataset, epochs=2)
-
 
 
 
