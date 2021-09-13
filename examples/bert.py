@@ -28,7 +28,7 @@ from NLP_starter.seq2seq.bert import PretrainBertModel
 config = BertConfig(type_vocab_size=2) #, max_seq_len=20)
 
 pbm = PretrainBertModel(config)
-print(pbm.build_pretrain_model())
+print(pbm.build_pretrain_model(training=True))
 
 
 
@@ -65,8 +65,8 @@ def decode_record(record, config):
               example["masked_lm_ids"],
               example["masked_lm_weights"],
               example["next_sentence_labels"])
-    # return inputs, tf.ones((1,))
-    return example, tf.ones((1,))
+    return inputs, tf.ones((1,))
+    # return example, example["next_sentence_labels"]
 
 dataset = tf.data.TFRecordDataset('/home/odin/chaohuang/git-local/nlp/bert/tf_examples.tfrecord')
 

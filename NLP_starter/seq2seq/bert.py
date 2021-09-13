@@ -132,7 +132,7 @@ class BertEncoder(tf.keras.layers.Layer):
             layer_module.build(input_shape)
         super(BertEncoder, self).build(input_shape)
 
-    def call(self, inputs, mask=None):
+    def call(self, inputs, mask=None, training=None):
         """
         inputs:
             (batch, Te, emb_size)
@@ -142,7 +142,7 @@ class BertEncoder(tf.keras.layers.Layer):
         all_encoder_layers_list = []
         prev_output = inputs
         for layer_module in self.encoder_layers:
-            prev_output = layer_module(inputs=prev_output, mask=mask)
+            prev_output = layer_module(inputs=prev_output, mask=mask, training=training)
             all_encoder_layers_list.append(prev_output)
         return all_encoder_layers_list
 
@@ -182,9 +182,9 @@ class BertModel(tf.keras.layers.Layer):
         self.pooler.build(input_shape[0] + (self.config.hidden_size,))
         super(BertModel, self).build(input_shape)
 
-    def call(self, inputs, mask):
+    def call(self, inputs, mask, training=None):
         # input_ids, token_type_ids, position_ids = inputs
-        embedding_output = self.embeddings(inputs)
+        embedding_output = self.embeddings(inputs, training=training)
         all_encoder_layers = self.encoder(embedding_output, mask=mask)
         self.sequence_output = all_encoder_layers[-1]
         pooled_output = self.pooler(all_encoder_layers)
@@ -284,18 +284,15 @@ class PretrainBertModel(object):
     def gather_indexes(self, sequence_tensor, positions):
         """Gathers the vectors at the specific positions over a minibatch."""
         batch_size, seq_length, width = tf.shape(sequence_tensor)
-        print('debug', batch_size, seq_length, width)
         flat_offsets = tf.reshape(
           tf.range(0, batch_size, dtype=tf.int32) * seq_length, [-1, 1])
-        print('debug', positions, flat_offsets)
         flat_positions = tf.reshape(positions + flat_offsets, [-1])
         flat_sequence_tensor = tf.reshape(sequence_tensor,
                                         [batch_size * seq_length, width])
-        print('debug', flat_sequence_tensor)
         output_tensor = tf.gather(flat_sequence_tensor, flat_positions)
         return output_tensor
 
-    def build_pretrain_model(self):
+    def build_pretrain_model(self, training=None):
         # inputs
         input_ids = tf.keras.layers.Input(
             (self.config.max_seq_len,), dtype=tf.int32, name="input_ids")
@@ -332,7 +329,8 @@ class PretrainBertModel(object):
         position_ids = tf.constant(list(range(self.config.max_seq_len)))
 
         pooled_output = self.basic_model(
-            [input_ids, segment_ids, position_ids], mask=input_mask)
+            [input_ids, segment_ids, position_ids],
+            mask=input_mask, training=training)
         sequence_output = self.basic_model.sequence_output
 
         # masked lm log probs
@@ -341,9 +339,7 @@ class PretrainBertModel(object):
 
         input_tensor = self.cls_pred_tsfm_dense(input_tensor)
         input_tensor = self.cls_pred_tsfm_layer_norm(input_tensor)
-        print('debug', input_tensor.shape, output_weights.shape)
         logits = tf.matmul(input_tensor, output_weights, transpose_b=True)
-        print('debug', logits.shape)
         masked_lm_logits = tf.nn.bias_add(logits, self.output_bias)
         masked_lm_log_probs = tf.nn.log_softmax(logits, axis=-1)
 
@@ -354,20 +350,16 @@ class PretrainBertModel(object):
         # masked lm loss
         label_ids = tf.reshape(masked_lm_ids, [-1])
         label_weights = tf.reshape(masked_lm_weights, [-1])
-        print('debug-label_ids', masked_lm_ids, label_ids.dtype)
         one_hot_labels = tf.one_hot(
             label_ids, depth=self.config.vocab_size, dtype=tf.float32)
-        print('debug', one_hot_labels.shape)
 
         # The `positions` tensor might be zero-padded (if the sequence is too
         # short to have the maximum number of predictions). The `label_weights`
         # tensor has a value of 1.0 for every real prediction and 0.0 for the
         # padding predictions.
         per_example_loss = -tf.reduce_sum(masked_lm_log_probs * one_hot_labels, axis=[-1])
-        print('debug', per_example_loss.shape)
         numerator = tf.reduce_sum(label_weights * per_example_loss)
         denominator = tf.reduce_sum(label_weights) + 1e-5
-        print('debug', numerator, denominator)
         masked_lm_loss = numerator / denominator
 
         # next sentense
@@ -382,10 +374,10 @@ class PretrainBertModel(object):
         # inputs = [input_ids, input_mask, segment_ids, masked_lm_positions,
         #           masked_lm_ids, masked_lm_weights, next_sentence_labels]
         # labels = [masked_lm_ids, masked_lm_weights, next_sentence_labels]
-        print('debug-masked_lm_ids', masked_lm_ids)
         # outputs = [masked_lm_log_probs, next_sentence_log_probs]
-        print('debug-output', masked_lm_log_probs.shape, next_sentence_log_probs.shape)
 
+        def bert_loss(y_true, y_pred):
+            return y_pred
 
         self.model = tf.keras.models.Model(
             inputs=[input_ids, input_mask, segment_ids, masked_lm_positions,
@@ -393,8 +385,8 @@ class PretrainBertModel(object):
             # outputs=next_sentence_loss)
             outputs=total_loss)
         self.model.compile('Adam',
-                           loss=lambda y_true, y_pred: y_pred,
-                           metrics=[total_loss]
+                           loss=bert_loss,
+                           metrics=[bert_loss]
                           )
         return self.model.summary()
 
