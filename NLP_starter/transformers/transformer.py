@@ -398,6 +398,8 @@ class DecoderLayer(tf.keras.layers.Layer):
         x = self.layer_norm_attention(x)
 
         # multihead attention, middle orange block in the decoder
+        # 注意这里的key和value是encoder的输出。在图上是来自左侧的两条线段。
+        # 图中的QKV顺序为：VKQ
         # query: the masked_attention output
         # key and value: encoder output
         attention = self.multi_head_attention(
