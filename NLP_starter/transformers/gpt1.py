@@ -145,16 +145,16 @@ class PretrainGPT1Model(object):
     def build_pretrain_model(self, CLS_index, training=None):
         # inputs
         inputs = tf.keras.layers.Input((self.config.max_seq_len,), dtype=tf.int64)
-        # TODO: input_mask ??
-        input_mask = None
+        # input_mask 并没有输入到gpt模型中，只生效在最后到lm_loss上
+        input_mask = tf.keras.layers.Input((self.config.max_seq_len,), dtype=tf.float32)
         cls_label = tf.keras.layers.Input((1,))
         # weights
         output_weights = self.basic_model.word_embeddings.embeddings
         clf_dense = tf.keras.layers.Dense(1)
         bce_loss = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
-        # gpt-1 model
-        h = self.basic_model(inputs, mask=input_mask, training=training)
+        # gpt-1 model, no mask
+        h = self.basic_model(inputs, mask=None, training=training)
 
         # classifier loss
         pool_ids = tf.argmax(tf.cast(tf.equal(inputs, CLS_index), tf.int32), axis=1)
@@ -170,12 +170,20 @@ class PretrainGPT1Model(object):
         lm_logits = tf.matmul(lm_h, output_weights, transpose_b=True)
         lm_labels = tf.reshape(inputs[:, 1:], [-1])
         # lm_loss = scce_loss(lm_labels, lm_logits) # 直接用scce无法编译，改成自己实现。
-        per_example_loss = -tf.nn.log_softmax(
-            lm_logits, axis=-1) * tf.one_hot(lm_labels, depth=self.config.vocab_size)
-        lm_loss = tf.reduce_sum(per_example_loss) / tf.cast(tf.shape(lm_labels)[0], tf.float32)
+        # per_example_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels, logits)
+        per_example_loss = -tf.reduce_sum(
+            tf.nn.log_softmax(lm_logits, axis=-1) * \
+            tf.one_hot(lm_labels, depth=self.config.vocab_size), axis=1)
+        # (batch, max_seq_len -1)
+        per_example_loss = tf.reshape(per_example_loss,
+                                      (-1, self.config.max_seq_len - 1))
+        mask = input_mask[:, 1:] # 最后一token预测到是0，再往后就是0预测0，没有意义，mask掉。
+        lm_loss = tf.reduce_sum(per_example_loss * mask, axis=1) / tf.reduce_sum(mask, axis=1)
+        print('debug-lm_loss', lm_loss.shape)
+        lm_loss = tf.reduce_mean(lm_loss)
         total_loss = clf_losses + self.config.lm_coef * lm_loss
 
-        self.model = tf.keras.models.Model(inputs=[inputs, cls_label], outputs=total_loss)
+        self.model = tf.keras.models.Model(inputs=[inputs, input_mask, cls_label], outputs=total_loss)
 
         def fake_loss(y_true, y_pred):
             return y_pred

@@ -41,7 +41,7 @@ def get_dataset(file_path):
     LABEL_COLUMN = 'AnswerRightEnding'
     dataset = tf.data.experimental.make_csv_dataset(
           file_path,
-          batch_size=batch_size, # 为了示例更容易展示，手动设置较小的值
+          batch_size=batch_size,
           label_name=LABEL_COLUMN,
           na_value="?",
           num_epochs=1,
@@ -62,12 +62,13 @@ def parse_data(*raw_data):
     max_len = config.max_seq_len // 2 - 2
 
     print(token_a.shape)
+    tile_size = tf.shape(labels)[0]
     start_column =  tf.tile(tf.constant([[START_index]], dtype=tf.int64),
-                            [batch_size, 1])
+                            [tile_size, 1])
     sep_column =  tf.tile(tf.constant([[SEP_index]], dtype=tf.int64),
-                            [batch_size, 1])
+                            [tile_size, 1])
     cls_column =  tf.tile(tf.constant([[CLS_index]], dtype=tf.int64),
-                            [batch_size, 1])
+                            [tile_size, 1])
 #     print(tf.tile([[START_index]], [tf.shape(token_a)[0], 1]))
     pair_ab = tf.concat([start_column,
                         token_a[:,:max_len],
@@ -81,12 +82,13 @@ def parse_data(*raw_data):
 
     pair_ab = tf.pad(pair_ab, [[0, 0], [0, config.max_seq_len - tf.shape(pair_ab)[1]]])
     pair_ac = tf.pad(pair_ac, [[0, 0], [0, config.max_seq_len - tf.shape(pair_ac)[1]]])
-    example = tf.concat([pair_ab, pair_ac], axis=0)
+    example = tf.concat([pair_ab, pair_ac], axis=0)    # xmb and X
+    mask = tf.cast(tf.greater(example, 0), tf.float32) # mmb and M
 
     labels = tf.one_hot(labels - 1, depth=2)
-    labels = tf.concat([labels[:,0], labels[:,1]], axis=0)
+    labels = tf.concat([labels[:,0], labels[:,1]], axis=0) # Y
 
-    return (example, labels), tf.zeros((1,))
+    return (example, mask, labels), tf.zeros((1,))
 
 
 raw_train_data = get_dataset(train_file_path)
