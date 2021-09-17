@@ -252,7 +252,7 @@ class EncoderLayer(tf.keras.layers.Layer):
                  layer_norm_epsilon=1e-12,
                  attention_use_scale=False, attention_scale_factor=None,
                  use_query_mask=True, use_value_mask=True,
-                 ff_activation='relu',
+                 ff_activation='relu', causal=False,
                  **kwargs):
         super(EncoderLayer, self).__init__(**kwargs)
         self.d_model = d_model
@@ -263,7 +263,10 @@ class EncoderLayer(tf.keras.layers.Layer):
         # multihead attention, orange block in the model architecture
         self.multi_head_attention = MultiHeadAttention(
             n_head, d_model,
-            use_scale=attention_use_scale, scale_factor=attention_scale_factor)
+            use_scale=attention_use_scale, 
+            scale_factor=attention_scale_factor,
+            causal=causal
+        )
         # self.attention_out_dense = tf.keras.layers.Dense(d_model)
 
         # Residual Dropout: We apply dropout [27] to the output of each sub-layer,

@@ -184,7 +184,7 @@ class BertModel(tf.keras.layers.Layer):
     def call(self, inputs, mask, training=None):
         # input_ids, token_type_ids, position_ids = inputs
         embedding_output = self.embeddings(inputs, training=training)
-        all_encoder_layers = self.encoder(embedding_output, mask=mask)
+        all_encoder_layers = self.encoder(embedding_output, mask=mask, training=training)
         self.sequence_output = all_encoder_layers[-1]
         pooled_output = self.pooler(all_encoder_layers)
 
@@ -194,7 +194,7 @@ class BertModel(tf.keras.layers.Layer):
         """
         加载模型
         """
-        model_path = '/home/odin/chaohuang/data/chinese_L-12_H-768_A-12/'
+        model_path = './data/chinese_L-12_H-768_A-12/'
         # tf.compat.v1.train.import_meta_graph(os.path.join(model_path))
         loaded = tf.train.load_checkpoint(os.path.join(model_path, 'bert_model.ckpt'))
         var2shape_map = loaded.get_variable_to_shape_map()

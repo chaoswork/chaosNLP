@@ -5,9 +5,9 @@ import sys
 sys.path.append('.')
 import tensorflow as tf
 
-from NLP_starter.seq2seq.bert import BertConfig
-from NLP_starter.seq2seq.bert import BertModel
-from NLP_starter.seq2seq.bert import PretrainBertModel
+from NLP_starter.transformers.bert import BertConfig
+from NLP_starter.transformers.bert import BertModel
+from NLP_starter.transformers.bert import PretrainBertModel
 
 # config = BertConfig(type_vocab_size=2, max_seq_len=20)
 # 
@@ -68,7 +68,7 @@ def decode_record(record, config):
     return inputs, tf.ones((1,))
     # return example, example["next_sentence_labels"]
 
-dataset = tf.data.TFRecordDataset('/home/odin/chaohuang/git-local/nlp/bert/tf_examples.tfrecord')
+dataset = tf.data.TFRecordDataset('./data/tf_examples.tfrecord')
 
 # for raw_record in d.take(1):
 #     example = tf.train.Example()
