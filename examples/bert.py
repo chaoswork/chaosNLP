@@ -5,9 +5,9 @@ import sys
 sys.path.append('.')
 import tensorflow as tf
 
-from NLP_starter.transformers.bert import BertConfig
-from NLP_starter.transformers.bert import BertModel
-from NLP_starter.transformers.bert import PretrainBertModel
+from chaosNLP.transformers.bert import BertConfig
+from chaosNLP.transformers.bert import BertModel
+from chaosNLP.transformers.bert import PretrainBertModel
 
 # config = BertConfig(type_vocab_size=2, max_seq_len=20)
 # 

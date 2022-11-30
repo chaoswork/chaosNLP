@@ -3,3 +3,5 @@
 __pycache__
 *.pyc
 /data
+/jupyter_draft
+*.png

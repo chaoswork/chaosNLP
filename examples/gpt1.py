@@ -6,8 +6,8 @@ sys.path.append('.')
 import tensorflow as tf
 import tensorflow_text as text
 
-from NLP_starter.transformers.bert import BertConfig
-from NLP_starter.transformers.gpt1 import PretrainGPT1Model
+from chaosNLP.transformers.bert import BertConfig
+from chaosNLP.transformers.gpt1 import PretrainGPT1Model
 
 
 config = BertConfig(vocab_size=30522, max_seq_len=128)
