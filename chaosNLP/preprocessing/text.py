@@ -7,16 +7,17 @@ class Tokenizer(object):
     将原始文本切词，停用词过滤，高低频过滤，并转化为数字序列
     """
     def __init__(self,
+                 langs='zh',
                  lower=True,
-                 wordseg='jieba',
                  stopwords=None,
                  min_freq=0,
                  max_freq=None,
                  max_word_nums=None):
         """
         Params:
+            langs: string, zh/en
+                要支持的语料
             lower: 对英文采用小写，默认为True
-            wordseg: 默认采用jieba分词，其他暂未支持。
             stopwords: 停用词
                 - 如果是"zh", 则采用默认的中文停用词
                 - 如果是"en", 则采用默认的英文停用词, 暂时还未支持
@@ -26,10 +27,20 @@ class Tokenizer(object):
             max_size: 最大词数量，满足min_freq和max_freq后，保留词频多的词。
         """
         self.lower = lower
-        self.wordseg = wordseg
+        self.langs = langs
         self.min_freq = min_freq
         self.max_freq = max_freq
         self.max_word_nums = max_word_nums
+
+        # wordseg function
+        if self.langs == 'zh':
+            import jieba
+            self.wordseg_fn = jieba.lcut
+        elif self.langs == 'en':
+            import nltk
+            self.wordseg_fn = nltk.tokenize.word_tokenize
+        else:
+            raise NotImplementedError("目前只支持jieba分词")
 
         # stopwords
         self.stopwords_list = []
@@ -48,7 +59,16 @@ class Tokenizer(object):
                            self.oov_token: self.oov_id}
         self.word_count = {self.pad_token: 0, self.oov_token: 0}
 
-    def tokenize(self, texts):
+    def tokenize(self, text):
+        """
+        Params:
+          text: string, 要切词的文本
+        Returns:
+          a list, 切词的结果
+        """
+        return self.wordseg_fn(text)
+
+    def tokenize_list(self, texts):
         """
         Params:
             texts: 构建的文本，可以有多种类型
@@ -61,15 +81,10 @@ class Tokenizer(object):
         if isinstance(texts, str):
             texts_list = texts.splitlines()
         assert isinstance(texts_list, list), "输入texts必须为list或者string"
-        if self.wordseg == 'jieba':
-            import jieba
-            wordseg_fn = jieba.lcut
-        else:
-            raise NotImplementedError("目前只支持jieba分词")
 
         # 切词并且去掉停用词
         texts_seg_list = [
-            [word for word in wordseg_fn(text) if word not in self.stopwords_list] for text in texts_list]
+            [word for word in self.wordseg_fn(text) if word not in self.stopwords_list] for text in texts_list]
         return texts_seg_list
 
     def fit_texts(self, texts, return_seqs=False):
@@ -81,7 +96,7 @@ class Tokenizer(object):
               - string, 通过"\n\r"等whitespace先进行分句。
             return_seqs: 是否返回texts的id sequence
         """
-        texts_seg_list = self.tokenize(texts)
+        texts_seg_list = self.tokenize_list(texts)
         # 处理文本
         for segs in texts_seg_list:
             if self.lower:
@@ -155,7 +170,7 @@ class Tokenizer(object):
         Return:
             a generator, 为了内存考虑，返回一个生成器。
         """
-        texts_seg_list = self.tokenize(texts)
+        texts_seg_list = self.tokenize_list(texts)
         for tokens in texts_seg_list:
             token_ids = [self.word_index.get(x, self.oov_id) for x in tokens]
             if padding:

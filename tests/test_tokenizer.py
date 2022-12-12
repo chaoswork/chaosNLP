@@ -63,3 +63,24 @@ def test_tokenizer_max_words_num():
         assert word in tokenizer.word_index
         assert word in tokenizer.word_count
         assert tokenizer.word_index[word] < n
+
+
+def test_tokenizer_max_min_freq():
+
+    tokenizer = Tokenizer(min_freq=2, max_freq=3)
+    test_texts = [
+        "经济保持恢复发展。",
+        "经济快速发展",
+        "经济保持"
+        "经济保持"
+    ]
+    tokenizer.fit_texts(test_texts)
+    assert tokenizer.word_index['<pad>'] == 0
+    assert tokenizer.word_index['<unk>'] == 1
+    word_reminds = ['保持', '发展', '<pad>', '<unk>']
+    assert len(tokenizer.word_count) == len(word_reminds)
+    assert len(tokenizer.word_index) == len(word_reminds)
+    for word in word_reminds:
+        assert word in tokenizer.word_index
+        assert word in tokenizer.word_count
+        assert tokenizer.word_index[word] < len(word_reminds)
