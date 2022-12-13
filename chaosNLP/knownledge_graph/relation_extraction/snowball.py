@@ -5,7 +5,7 @@ PaperUrl: http://www.cs.columbia.edu/~gravano/Papers/2000/dl00.pdf
 
 https://github.com/davidsbatista/Snowball
 """
-
+import logging
 from chaosNLP.preprocessing.text import Tokenizer
 
 
@@ -95,6 +95,8 @@ class Snowball:
         self.beta = beta
         self.gamma = gamma
         self.tokenizer = Tokenizer(langs=langs)
+        self.seed_dict_a = None
+        self.seed_dict_b = None
 
     def load_labeled_corpus(self, filename):
         """
@@ -139,3 +141,53 @@ class Snowball:
                                                  between, entity_b, type_b, after))
 
         return patterns
+
+    def set_seeds(self, seed_dict_a, seed_dict_b):
+        """
+        Params:
+          seed_dict_a: dict
+            种子词典a， exmaple: {'LOC': ['New York', 'London']}
+          seed_dict_a: dict
+            种子词典b， exmaple: {'PER': ['Bill Gates', 'Jobs']}
+        """
+
+        self.seed_dict_a = seed_dict_a
+        self.seed_dict_b = seed_dict_b
+
+    def generate_tuples_from_file(self, filename):
+        """
+        将符合种子类型的tuple都找出来。
+        Params:
+          filename: 文件名
+          标注文件的格式样例如下：
+          > The statements made today by euro deputy <PER>Martin Schulz</PER> at the
+          > assembly in <LOC>Strasbourg</LOC> constitute a serious and unacceptable
+          > insult to the dignity of the president of the ...
+        """
+        assert self.seed_dict_a is not None, "you should call `snowball.set_seeds` first"
+
+        patterns = self.load_labeled_corpus(filename)
+        self.processed_tuples = []
+        for type_a in self.seed_dict_a:
+            for type_b in self.seed_dict_b:
+                for item in patterns:
+                    if item.type_a == type_a and item.type_b == type_b:
+                        self.processed_tuples.append(item)
+
+    def bootstrapping(self):
+        """
+        bootstrapping method
+        """
+        for _ in range(self.number_iterations):
+            # 和种子匹配，注意是种子内容，而不是种子类型
+            matched_tuples = []
+
+            for t in self.processed_tuples:
+                for type_a in self.seed_dict_a:
+                    for type_b in self.seed_dict_b:
+                        if t.entity_a in self.seed_dict_a[type_a] and \
+                           t.entity_b in self.seed_dict_b[type_b]:
+                            matched_tuples.append(t)
+            if len(matched_tuples) == 0:
+                logging.info("No more seeds found")
+                break
