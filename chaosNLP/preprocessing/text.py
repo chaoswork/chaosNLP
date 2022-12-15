@@ -17,7 +17,7 @@ class Tokenizer(object):
         stopwords: string
             - 如果是"zh", 则采用默认的中文停用词
             - 如果是"en", 则采用默认的英文停用词
-        
+
         """
         if langs == 'zh':
             import jieba
@@ -140,7 +140,8 @@ class textReader(object):
                                self.oov_token: self.oov_id}
         self.word_count = {self.pad_token: 0, self.oov_token: 0}
 
-    def fit_texts(self, texts, return_seqs=False):
+    def fit_texts(self, texts, return_seqs=False,
+                  padding=False, max_seq_len=None):
         """
         根据texts构建词典。
 
@@ -150,8 +151,14 @@ class textReader(object):
             构建的文本，可以有多种类型
             - list of string, 先进行分词
             - string, 通过"\n\r"等whitespace先进行分句。
+            - TODO: 支持迭代器类型
         return_seqs: bool
             是否返回texts的id sequence
+        padding: bool
+            return_seqs为True时生效，在末尾添加padding字符，需要配合max_seq_len一起使用
+        max_seq_len: int/None
+            return_seqs为True时生效，每个序列的最大长度
+
         """
         texts_seg_list = self.tokenizer.tokenize_list(texts)
         # 处理文本
@@ -174,16 +181,18 @@ class textReader(object):
                 # 特殊字符不处理
                 if word in self.special_tokens:
                     continue
-                if isinstance(self.min_freq, int) and self.word_count[word] < self.min_freq:
+                if isinstance(self.min_freq, int) and \
+                   self.word_count[word] < self.min_freq:
                     words_should_delete.add(word)
                 if isinstance(self.min_freq, float):
-                    assert 0.0 <= self.min_freq <= 1.0, "min_freq为浮点数时必须在[0,1]之间"
+                    assert 0.0 <= self.min_freq <= 1.0, "min_freq为浮点数必须在[0,1]内"
                     if self.word_count[word] / total_nums < self.min_freq:
                         words_should_delete.add(word)
-                if isinstance(self.max_freq, int) and self.word_count[word] > self.max_freq:
+                if isinstance(self.max_freq, int) and \
+                   self.word_count[word] > self.max_freq:
                     words_should_delete.add(word)
                 if isinstance(self.max_freq, float):
-                    assert 0.0 <= self.max_freq <= 1.0, "max_freq为浮点数时必须在[0,1]之间"
+                    assert 0.0 <= self.max_freq <= 1.0, "max_freq为浮点数必须在[0,1]内"
                     if self.word_count[word] / total_nums > self.max_freq:
                         words_should_delete.add(word)
 
@@ -193,7 +202,8 @@ class textReader(object):
                 del self.word_count[word]
 
         # 不能超过最大词汇量
-        if self.max_word_nums is not None and len(self.word_index) > self.max_word_nums:
+        if self.max_word_nums is not None and \
+           len(self.word_index) > self.max_word_nums:
             sorted_count = sorted(self.word_count.items(), key=lambda x: x[1])
             diff = len(self.word_index) - self.max_word_nums
             i = 0
@@ -213,6 +223,10 @@ class textReader(object):
                 # 前面已经删除了n个数字，所以原来的下标要减少n
                 n = bisect.bisect_left(deleted_ids, self.word_index[word])
                 self.word_index[word] -= n
+
+        # to sequence
+        if return_seqs:
+            return self.tokenlist_to_seqs(texts_seg_list, padding, max_seq_len)
 
     def text_to_seqs(self, texts, padding=False, max_seq_len=None):
         """
@@ -234,7 +248,25 @@ class textReader(object):
         a generator
         为了内存考虑，返回一个生成器。
         """
-        texts_seg_list = self.tokenizer.tokenize_list(texts)
+        return self.tokenlist_to_seqs(
+            self.tokenizer.tokenize_list(texts), padding, max_seq_len)
+
+    def tokenlist_to_seqs(self, texts_seg_list, padding, max_seq_len):
+        """
+        Parameters
+        ----------
+        texts_seg_list: list of list
+            tokenize后的list
+        padding: bool
+            在末尾添加padding字符，需要配合max_seq_len一起使用
+        max_seq_len: int/None
+            每个序列的最大长度
+
+        Yields
+        ------
+        list
+        list of token_ids
+        """
         for tokens in texts_seg_list:
             token_ids = [self.get_word_id(x) for x in tokens]
             if padding:

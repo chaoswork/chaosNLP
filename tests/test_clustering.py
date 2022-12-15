@@ -1,9 +1,6 @@
-import sys
 import numpy as np
-import random
+# import random
 from sklearn.metrics.pairwise import cosine_similarity
-
-sys.path.append('..')
 from chaosNLP.utils.clustering import SinglePassCluster
 
 

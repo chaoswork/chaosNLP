@@ -1,5 +1,3 @@
-import sys
-sys.path.append('..')
 from chaosNLP.preprocessing.text import textReader
 
 
@@ -38,7 +36,8 @@ def test_text_reader_padding():
     assert text_reader.word_index['<pad>'] == 0
     assert text_reader.word_index['<unk>'] == 1
     assert text_reader.word_index['经济'] == 2
-    seqs = list(text_reader.text_to_seqs(test_texts, padding=True, max_seq_len=32))
+    seqs = list(text_reader.text_to_seqs(test_texts, padding=True,
+                                         max_seq_len=32))
     assert len(seqs) == 3
     assert len(seqs[0]) == 32
     assert len(seqs[1]) == 32
@@ -83,6 +82,23 @@ def test_text_reader_max_min_freq():
         assert word in text_reader.word_index
         assert word in text_reader.word_count
         assert text_reader.word_index[word] < len(word_reminds)
+
+
+def test_text_reader_fit_transform():
+    corpus = [
+        'This is the first line, the start line',
+        'the second line',
+        'this is the third line, the last line'
+    ]
+    text_reader = textReader(langs='en')
+    seqs = list(text_reader.fit_texts(corpus, return_seqs=True))
+    # This/2 is/3 the/4 first/5 line/6 ,/7 the/4 start/8 line/6
+    assert seqs[0] == [2, 3, 4, 5, 6, 7, 4, 8, 6]
+    # the/4 second/9 line/6
+    assert seqs[1] == [4, 9, 6]
+    # this/2 is/3 the/4 third/10 line/6 ,/7 the/4 last/11 line/6
+    assert seqs[2] == [2, 3, 4, 10, 6, 7, 4, 11, 6]
+
 
 def test_text_reader_count_vector():
     import numpy as np
