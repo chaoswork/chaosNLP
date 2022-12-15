@@ -18,11 +18,16 @@ class SinglePassCluster:
     def get_similar_cluster_id(self, vec):
         """
         找到满足最相似且满足相似度阈值的聚类簇id，如果没找到，则返回None
-        Params:
-          vec: array-like
+
+        Parameters
+        ----------
+        vec: array-like
             query vector
-        Returns:
-          (cluster_id or None, similarity)
+
+        Returns
+        -------
+        tuple
+            (cluster_id or None, similarity)
         """
         if self._cluster_centroid is None:
             return None, None
