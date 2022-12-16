@@ -12,5 +12,6 @@ def test_default_tfidf():
     corpus = [' '.join([f"hello{x}" for x in y]) for y in seqs]
     vectorizer = TfidfVectorizer(vocabulary=vocab)
     expected = vectorizer.fit_transform(corpus).toarray()
-    mat = TfIdfModel().transform(seqs)
+    mat = TfIdfModel().fit_transform(seqs).toarray()
+    print(mat)
     assert np.allclose(mat, expected)

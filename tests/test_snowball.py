@@ -2,9 +2,9 @@ from chaosNLP.knownledge_graph.relation_extraction.snowball import Snowball
 
 
 def test_load_file():
-    snowball = Snowball('en')
-    res = snowball.load_labeled_corpus(
-        './tests/data/snowball_labeled_data.txt')
+    data_file = './tests/data/snowball_labeled_data.txt'
+    snowball = Snowball('en', data_file)
+    res = snowball.load_labeled_corpus(data_file)
     assert len(res) > 0
     assert res[0].entity_a == 'Martin Schulz'
     assert res[0].type_a == 'PER'

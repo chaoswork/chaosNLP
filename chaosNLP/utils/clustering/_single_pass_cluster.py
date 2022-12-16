@@ -5,15 +5,23 @@ class SinglePassCluster:
     """
     Single pass cluster algorithm
     """
-    def __init__(self, similarity_threshold):
+    def __init__(self, similarity_threshold, similarity_fn=None):
         """
-        Params:
-          similarity_threshold: float, [0, 1]
+        Parameters
+        ----------
+        similarity_threshold: float,
             能够聚类的相似度阈值。
+        similarity_fn: function
+            计算两个向量的函数，默认为None。为None时采用cosine similarity
+            该函数接受两个参数，第一个是 n x k 的矩阵，一个是 k x 1 的query向量。
         """
         self._cluster_dict = {}
         self._cluster_centroid = None
         self.similarity_threshold = similarity_threshold
+        if similarity_fn is None:
+            self.similarity_fn = np.dot
+        else:
+            self.similarity_fn = similarity_fn
 
     def get_similar_cluster_id(self, vec):
         """
@@ -34,7 +42,6 @@ class SinglePassCluster:
         query = np.array(vec).reshape(1, -1) / np.linalg.norm(vec)
         cos_similarity = np.dot(self._cluster_centroid, query.T)
         max_index = np.argmax(cos_similarity)
-        print('debug-max_index', query, self._cluster_centroid, max_index, cos_similarity)
         if cos_similarity[max_index][0] >= self.similarity_threshold:
             return max_index, cos_similarity[max_index][0]
         return None, cos_similarity[max_index][0]
